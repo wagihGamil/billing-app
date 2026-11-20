@@ -1,12 +1,12 @@
 // الصق هنا إعدادات تطبيق الويب من:
 // Firebase Console ← Project settings ← Your apps ← Web app ← SDK setup and configuration (Config)
 export const firebaseConfig = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_PROJECT.firebaseapp.com',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_PROJECT.appspot.com',
-  messagingSenderId: 'YOUR_SENDER_ID',
-  appId: 'YOUR_APP_ID',
+  apiKey: 'AIzaSyDswBHXgCU5bN7zWRwk8bVwJe9gKUA-Vuk',
+  authDomain: 'billing-app-b0ee0.firebaseapp.com',
+  projectId: 'billing-app-b0ee0',
+  storageBucket: 'billing-app-b0ee0.firebasestorage.app',
+  messagingSenderId: '210768000592',
+  appId: '1:210768000592:web:79e74b438858eb215e0355',
 };
 
 // رمز العملة المعروض
