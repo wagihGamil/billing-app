@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- دوال مساعدة ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+    // مستخدم مسجّل في النظام وحسابه مفعّل
+    function isActive() {
+      return signedIn() && exists(userPath()) && get(userPath()).data.active == true;
+    }
+    function isOwner() {
+      return isActive() && get(userPath()).data.role == 'owner';
+    }
+
+    // ---------- المستخدمون ----------
+    match /users/{uid} {
+      // المستخدم يقرأ بياناته (حتى لو موقوف علشان التطبيق يعرف إنه موقوف)
+      allow read: if signedIn() && (request.auth.uid == uid || isOwner());
+      allow create, update, delete: if isOwner();
+    }
+
+    // ---------- الأجهزة ----------
+    match /devices/{deviceId} {
+      allow read: if isOwner()
+        || (signedIn() && (resource == null || resource.data.uid == request.auth.uid));
+      // الجهاز الجديد يسجّل نفسه غير محظور
+      allow create: if isActive()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.blocked == false;
+      // الجهاز يحدّث بياناته لكن مايقدرش يفك حظر نفسه
+      allow update: if isOwner()
+        || (isActive()
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.blocked == resource.data.blocked);
+      allow delete: if isOwner();
+    }
+
+    // ---------- المنتجات ----------
+    match /products/{productId} {
+      allow read: if isActive();
+      allow create, delete: if isOwner();
+      // الكاشير يقدر ينقّص المخزون فقط (البيع) — مفيش زيادة ولا تعديل سعر
+      allow update: if isOwner()
+        || (isActive()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock', 'updatedAt'])
+            && request.resource.data.stock <= resource.data.stock);
+    }
+
+    // ---------- الفواتير المعتمدة ----------
+    match /invoices/{invoiceId} {
+      // get: الكاشير يقرأ فاتورته (أو مفيش فاتورة لسه — بتحصل أثناء المزامنة)
+      allow get: if isOwner()
+        || (isActive() && (resource == null || resource.data.cashierId == request.auth.uid));
+      allow list: if isOwner();
+      allow create: if isActive()
+        && request.resource.data.cashierId == request.auth.uid
+        && request.resource.data.status in ['confirmed', 'conflict']
+        && request.resource.data.items is list
+        && request.resource.data.total is number;
+      // المالك فقط يقفل التعارض؛ الفاتورة نفسها ما بتتعدلش
+      allow update: if isOwner()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['resolved', 'resolvedBy', 'resolvedAt', 'resolutionNote']);
+      allow delete: if false;
+    }
+
+    // ---------- حركات المخزون (سجل لا يتعدل) ----------
+    match /stockMovements/{movementId} {
+      allow read: if isOwner();
+      allow create: if isOwner()
+        || (isActive()
+            && request.resource.data.type == 'sale'
+            && request.resource.data.userId == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    // ---------- إعدادات (بيانات المحل) ----------
+    match /settings/{docId} {
+      allow read: if isActive();
+      allow write: if isOwner();
+    }
+  }
+}
