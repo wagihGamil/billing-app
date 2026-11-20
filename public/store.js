@@ -1,5 +1,5 @@
 // حالة تطبيق الكاشير + الفواتير المحلية (IndexedDB)
-import { idb, dayKey } from './common.js';
+import { idb, dayKey, round2, round3 } from './common.js';
 
 export const S = {
   user: null,            // {uid,email,name,role,active}
@@ -58,13 +58,15 @@ export function pendingQty(productId) {
     if (inv.status !== 'pending') continue;
     for (const it of inv.items) if (it.productId === productId) q += it.qty;
   }
-  return q;
+  return round3(q);
 }
 /** المخزون المعروض = مخزون السيرفر − المبيعات المعلّقة */
-export const localStock = (p) => p.stock - pendingQty(p.id);
+export const localStock = (p) => round3(p.stock - pendingQty(p.id));
 
-export const invoiceTotal = (inv) => inv.items.reduce((s, i) => s + i.qty * i.unitPrice, 0);
-export const invoiceCount = (inv) => inv.items.reduce((s, i) => s + i.qty, 0);
+export const lineTotal = (i) => round2(i.qty * i.unitPrice);
+export const invoiceTotal = (inv) => round2(inv.items.reduce((s, i) => s + lineTotal(i), 0));
+/** عدد الأصناف في الفاتورة (مش مجموع الكميات، لأن الكميات ممكن تبقى مل/جرام) */
+export const invoiceCount = (inv) => inv.items.length;
 
 function nextSeq(day) {
   const k = `seq_${day}`;
@@ -77,16 +79,26 @@ function nextSeq(day) {
 export function addToCart(productId, delta = 1) {
   const line = S.cart.find((l) => l.productId === productId);
   if (line) {
-    line.qty += delta;
+    line.qty = round3(line.qty + delta);
     if (line.qty <= 0) S.cart = S.cart.filter((l) => l !== line);
   } else if (delta > 0) {
-    S.cart.push({ productId, qty: delta });
+    S.cart.push({ productId, qty: round3(delta) });
+  }
+  emit();
+}
+/** تحديد كمية بالظبط (للمنتجات العشرية زي المل/الجرام) — صفر أو أقل بيشيل السطر */
+export function setQty(productId, qty) {
+  qty = round3(qty);
+  if (!(qty > 0)) S.cart = S.cart.filter((l) => l.productId !== productId);
+  else {
+    const line = S.cart.find((l) => l.productId === productId);
+    if (line) line.qty = qty; else S.cart.push({ productId, qty });
   }
   emit();
 }
 export const clearCart = () => { S.cart = []; S.lastInvoice = null; emit(); };
 export const cartTotal = () => S.cart.reduce((s, l) => {
-  const p = S.products.get(l.productId); return s + (p ? p.price * l.qty : 0);
+  const p = S.products.get(l.productId); return round2(s + (p ? round2(p.price * l.qty) : 0));
 }, 0);
 
 /** تأكيد البيع: بيحفظ الفاتورة محلياً فوراً (قبل أي اتصال) */
@@ -97,7 +109,7 @@ export async function completeSale() {
   const dk = dayKey(now);
   const items = S.cart.map((l) => {
     const p = S.products.get(l.productId);
-    return { productId: p.id, name: p.name, barcode: p.barcode, qty: l.qty, unitPrice: p.price };
+    return { productId: p.id, name: p.name, barcode: p.barcode, unit: p.unit, qty: l.qty, unitPrice: p.price };
   });
   const inv = {
     id: uuid(),

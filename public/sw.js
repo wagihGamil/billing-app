@@ -1,8 +1,8 @@
 // Service Worker: يخلّي التطبيق يفتح أوفلاين. بيكاشّي ملفات التطبيق ومكتبات Firebase.
 // مش بيتدخّل في طلبات Firestore/Auth (دي بيتولاها Firebase SDK بنفسه).
-const CACHE = 'pos-shell-v4';
+const CACHE = 'pos-shell-v5';
 const SHELL = [
-  './', './index.html', './app.js', './common.js', './store.js', './sync.js', './print.js',
+  './', './index.html', './app.js', './common.js', './store.js', './sync.js', './print.js', './scanner.js',
   './style.css', './firebase-config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   './owner/', './owner/index.html', './owner/owner.js',
 ];

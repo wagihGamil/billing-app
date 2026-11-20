@@ -31,6 +31,15 @@ const nf = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFra
 const ni = new Intl.NumberFormat('en-US');
 export const fmtMoney = (n) => `${nf.format(n || 0)} ${CURRENCY}`;
 export const fmtInt = (n) => ni.format(n || 0);
+
+// ---------- الكميات والوحدات ----------
+export const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+export const round3 = (n) => Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
+/** كمية للعرض: 50 / 37.5 (من غير أصفار زيادة) */
+export const fmtQty = (n) => String(round3(n || 0));
+/** وحدات مقترحة، والوحدات اللي بتقبل كسور بتتعلّم تلقائياً */
+export const UNIT_SUGGESTIONS = ['قطعة', 'علبة', 'مل', 'لتر', 'جرام', 'كجم', 'متر', 'سم'];
+export const FRACTIONAL_UNITS = ['مل', 'لتر', 'جرام', 'كجم', 'متر', 'سم'];
 const pad = (n) => String(n).padStart(2, '0');
 export const fmtDateTime = (d) => {
   if (!d) return '—';

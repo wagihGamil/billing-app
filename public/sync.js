@@ -3,7 +3,7 @@ import {
   collection, doc, onSnapshot, getDocFromServer, setDoc, updateDoc, runTransaction,
   serverTimestamp, increment, Timestamp,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
-import { auth, db, withTimeout, isNetworkError, idb } from './common.js';
+import { auth, db, withTimeout, isNetworkError, idb, round2, round3, fmtQty } from './common.js';
 import { APP_VERSION } from './firebase-config.js';
 import {
   S, emit, deviceId, deviceCode, deviceName, pending, pendingCount, conflictCount,
@@ -43,6 +43,7 @@ function startListeners() {
       map.set(d.id, {
         id: d.id, name: m.name || '', barcode: m.barcode || '',
         price: Number(m.price) || 0, stock: Number(m.stock) || 0,
+        unit: m.unit || 'قطعة', fractional: m.fractional === true,
       });
     });
     S.products = map;
@@ -185,11 +186,11 @@ function pushInvoice(inv) {
       }
       const stock = Number(d.stock) || 0;
       const price = Number(d.price);
-      const after = stock - item.qty;
+      const after = round3(stock - item.qty);
       live.set(item.productId, after);
       if (after < 0) {
         conflicts.push({ type: 'insufficient_stock', productId: item.productId, productName: item.name,
-          detail: `مخزون "${item.name}" على السيرفر ${stock} وتم بيع ${item.qty} (الرصيد بقى ${after})` });
+          detail: `مخزون "${item.name}" على السيرفر ${fmtQty(stock)} ${item.unit || ''} وتم بيع ${fmtQty(item.qty)} (الرصيد بقى ${fmtQty(after)})` });
       }
       if (Number.isFinite(price) && Math.abs(price - item.unitPrice) > 0.009) {
         conflicts.push({ type: 'price_changed', productId: item.productId, productName: item.name,
@@ -200,8 +201,8 @@ function pushInvoice(inv) {
     tx.set(invRef, {
       number: inv.number, deviceId: inv.deviceId, deviceCode: inv.deviceCode,
       cashierId: inv.cashierId, cashierName: inv.cashierName,
-      items: inv.items.map((i) => ({ ...i, total: i.qty * i.unitPrice })),
-      itemCount: inv.items.reduce((s, i) => s + i.qty, 0),
+      items: inv.items.map((i) => ({ ...i, unit: i.unit || 'قطعة', total: round2(i.qty * i.unitPrice) })),
+      itemCount: inv.items.length,
       total: invoiceTotal(inv),
       createdAt: Timestamp.fromMillis(inv.createdAt),
       syncedAt: serverTimestamp(),

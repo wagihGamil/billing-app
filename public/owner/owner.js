@@ -1,8 +1,9 @@
 // لوحة المالك (HTML/JS) — نفس قاعدة Firebase بتاعة تطبيق الكاشير
 import {
   configured, firebaseConfig, auth, db, $, $$, esc, fmtMoney, fmtInt, fmtDateTime, timeAgo,
-  toast, startOfDay,
+  toast, startOfDay, fmtQty, round2, round3, UNIT_SUGGESTIONS, FRACTIONAL_UNITS,
 } from '../common.js';
+import { openScanner } from '../scanner.js';
 import { initializeApp, deleteApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut,
@@ -18,7 +19,7 @@ const LOW = 5;                       // مخزون منخفض
 const STALE = 15 * 60 * 1000;        // جهاز غير متصل بعد 15 دقيقة
 let unsubs = [], unsubBadge = null, main = null;
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('../sw.js').catch(() => {});
 
 if (!configured) {
   root.innerHTML = '<div class="login"><div class="card"><h2>Firebase مش متضبط</h2><p>افتح <code>firebase-config.js</code> والصق إعدادات تطبيق الويب.</p></div></div>';
@@ -152,7 +153,7 @@ function pageOverview(el) {
     const max = Math.max(...per, 1);
     const byP = {}, byC = {};
     inv.forEach((i) => {
-      i.items.forEach((it) => { const o = byP[it.productId] || (byP[it.productId] = { name: it.name, qty: 0, rev: 0 }); o.qty += it.qty; o.rev += it.qty * it.unitPrice; });
+      i.items.forEach((it) => { const o = byP[it.productId] || (byP[it.productId] = { name: it.name, unit: it.unit || 'قطعة', qty: 0, rev: 0 }); o.qty += it.qty; o.rev += it.qty * it.unitPrice; });
       const k = i.cashierName || i.cashierId; byC[k] = (byC[k] || 0) + i.total;
     });
     const top = Object.values(byP).sort((a, b) => b.rev - a.rev).slice(0, 7);
@@ -174,7 +175,7 @@ function pageOverview(el) {
         ${days.map((d, k) => { const dt = new Date(d); return `<div class="bar"><span>${per[k] ? fmtInt(per[k]) : ''}</span><i style="height:${Math.max(2, per[k] / max * 80)}%"></i><span>${dt.getDate()}/${dt.getMonth() + 1}</span></div>`; }).join('')}
       </div></div>
       <div class="two">
-        <div class="card"><b>أكثر المنتجات مبيعاً (30 يوم)</b>${top.length ? top.map((t) => `<div class="kv"><span>${esc(t.name)}</span><span class="muted">${fmtInt(t.qty)} قطعة • ${fmtMoney(t.rev)}</span></div>`).join('') : '<p class="muted">لا توجد مبيعات بعد</p>'}</div>
+        <div class="card"><b>أكثر المنتجات مبيعاً (30 يوم)</b>${top.length ? top.map((t) => `<div class="kv"><span>${esc(t.name)}</span><span class="muted">${fmtQty(t.qty)} ${esc(t.unit)} • ${fmtMoney(t.rev)}</span></div>`).join('') : '<p class="muted">لا توجد مبيعات بعد</p>'}</div>
         <div class="card"><b>مبيعات الكاشير (30 يوم)</b>${cash.length ? cash.map(([n, v]) => `<div class="kv"><span>${esc(n)}</span><span class="muted">${fmtMoney(v)}</span></div>`).join('') : '<p class="muted">لا توجد مبيعات بعد</p>'}</div>
       </div>
       <p class="muted" style="font-size:12px">الأرقام من الفواتير اللي وصلت للسيرفر فقط؛ المعلّقة على الأجهزة تظهر بعد المزامنة.</p>`;
@@ -192,7 +193,7 @@ function invoiceDialog(i) {
     <div class="kv"><span>وصلت للسيرفر</span><span>${fmtDateTime(i.syncedAt)}</span></div>
     <div class="kv"><span>الكاشير</span><span>${esc(i.cashierName)}</span></div>
     <div class="kv"><span>الجهاز</span><span>${esc(i.deviceCode)}</span></div>
-    <div class="gap">${i.items.map((x) => `<div class="kv"><span>${x.qty} × ${esc(x.name)}</span><b>${fmtMoney(x.qty * x.unitPrice)}</b></div>`).join('')}</div>
+    <div class="gap">${i.items.map((x) => `<div class="kv"><span>${fmtQty(x.qty)} ${esc(x.unit || 'قطعة')} × ${esc(x.name)}</span><b>${fmtMoney(round2(x.qty * x.unitPrice))}</b></div>`).join('')}</div>
     <div class="kv"><b>الإجمالي</b><b>${fmtMoney(i.total)}</b></div>
     ${i.conflicts.length ? `<p class="neg">التعارضات:</p>${i.conflicts.map((c) => `<div>• ${esc(CONFLICT_LABEL[c.type] || c.type)}: ${esc(c.detail)}</div>`).join('')}
       ${i.resolved ? `<p class="muted">تم الحل: ${esc(i.resolutionNote || '')}</p>` : ''}` : ''}
@@ -210,9 +211,9 @@ function pageInvoices(el) {
     const list = all.filter((i) => (status === 'all' || i.status === status)
       && (!q || `${i.number} ${i.cashierName} ${i.deviceCode}`.toLowerCase().includes(q)));
     $('#sum').innerHTML = `<b>${fmtInt(list.length)} فاتورة • الإجمالي ${fmtMoney(list.reduce((s, i) => s + i.total, 0))}</b>`;
-    $('#tb').innerHTML = list.length ? table(['الرقم', 'التاريخ', 'الكاشير', 'الجهاز', 'القطع', 'الإجمالي', 'الحالة'],
+    $('#tb').innerHTML = list.length ? table(['الرقم', 'التاريخ', 'الكاشير', 'الجهاز', 'الأصناف', 'الإجمالي', 'الحالة'],
       list.slice(0, 500).map((i) => `<tr class="click" data-id="${esc(i.id)}"><td>${esc(i.number)}</td><td>${fmtDateTime(i.createdAt)}</td>
-        <td>${esc(i.cashierName)}</td><td>${esc(i.deviceCode)}</td><td>${i.itemCount || ''}</td><td>${fmtMoney(i.total)}</td>
+        <td>${esc(i.cashierName)}</td><td>${esc(i.deviceCode)}</td><td>${i.items.length}</td><td>${fmtMoney(i.total)}</td>
         <td>${i.status === 'conflict' ? (i.resolved ? pill('تعارض (اتحل)', 'gr') : pill('تعارض', 'er')) : pill('معتمدة', 'ok')}</td></tr>`).join(''))
       : '<p class="muted center">لا توجد فواتير</p>';
   };
@@ -239,10 +240,11 @@ function pageInventory(el) {
   const draw = () => {
     const list = all.filter((p) => (archived || !p.deleted) && (!lowOnly || (p.stock || 0) <= LOW)
       && (!q || `${p.name} ${p.barcode}`.toLowerCase().includes(q)));
-    $('#tb').innerHTML = list.length ? table(['المنتج', 'الباركود', 'السعر', 'المخزون', ''], list.map((p) => {
-      const s = p.stock || 0;
-      return `<tr><td>${esc(p.name)} ${p.deleted ? pill('مؤرشف', 'gr') : ''}</td><td dir="ltr">${esc(p.barcode)}</td><td>${fmtMoney(p.price)}</td>
-        <td class="${s < 0 ? 'neg' : s <= LOW ? 'low' : ''}">${s}</td>
+    $('#tb').innerHTML = list.length ? table(['المنتج', 'الباركود', 'الوحدة', 'السعر / وحدة', 'المخزون', ''], list.map((p) => {
+      const s = round3(p.stock || 0);
+      const u = p.unit || 'قطعة';
+      return `<tr><td>${esc(p.name)} ${p.deleted ? pill('مؤرشف', 'gr') : ''}</td><td dir="ltr">${esc(p.barcode)}</td><td>${esc(u)}</td><td>${fmtMoney(p.price)}</td>
+        <td class="${s < 0 ? 'neg' : s <= LOW ? 'low' : ''}">${fmtQty(s)} ${esc(u)}</td>
         <td>${p.deleted ? '' : `<button class="btn sm sec" data-a="stock" data-id="${p.id}">المخزون</button> `}
         <button class="btn sm sec" data-a="edit" data-id="${p.id}">تعديل</button>
         <button class="btn sm red" data-a="arc" data-id="${p.id}">${p.deleted ? 'استرجاع' : 'أرشفة'}</button></td></tr>`;
@@ -264,42 +266,79 @@ function pageInventory(el) {
 }
 
 function productDialog(p) {
-  formDialog(p ? `تعديل ${p.name}` : 'منتج جديد', `
+  const unit0 = p?.unit || 'قطعة';
+  const d = formDialog(p ? `تعديل ${p.name}` : 'منتج جديد', `
     <label>اسم المنتج</label><input name="name" required value="${esc(p?.name || '')}">
-    <label>الباركود</label><input name="barcode" dir="ltr" required value="${esc(p?.barcode || '')}">
-    <label>السعر</label><input name="price" type="number" step="0.01" min="0" required value="${p ? p.price : ''}">
-    ${p ? '' : '<label>رصيد افتتاحي</label><input name="stock" type="number" step="1" value="0">'}`,
+    <label>الباركود (اكتبه، أو اسكانر USB، أو اضغط مسح بالكاميرا)</label>
+    <div class="row"><input name="barcode" id="bc" class="grow" dir="ltr" required value="${esc(p?.barcode || '')}">
+      <button type="button" class="btn sec" id="scan">📷 مسح</button></div>
+    <label>وحدة البيع</label>
+    <input name="unit" id="un" list="units" required value="${esc(unit0)}" placeholder="قطعة / مل / جرام ...">
+    <datalist id="units">${UNIT_SUGGESTIONS.map((u) => `<option value="${u}">`).join('')}</datalist>
+    <label class="row" style="margin:10px 0 0;color:var(--tx)"><input type="checkbox" name="fractional" id="fr" style="width:auto"
+      ${(p ? p.fractional : FRACTIONAL_UNITS.includes(unit0)) ? 'checked' : ''}> يُباع بكميات عشرية (مثل 37.5 مل)</label>
+    <label id="pl">السعر لكل ${esc(unit0)}</label>
+    <input name="price" type="number" step="any" min="0" required value="${p ? p.price : ''}">
+    ${p ? '' : `<label id="sl">رصيد افتتاحي (بالـ ${esc(unit0)})</label><input name="stock" type="number" step="any" value="0">`}`,
   'حفظ', async (f) => {
-    const name = f.get('name').trim(), barcode = f.get('barcode').trim(), price = parseFloat(f.get('price'));
-    if (p) { await updateDoc(doc(db, 'products', p.id), { name, barcode, price, updatedAt: serverTimestamp() }); return; }
-    const dup = await getDocs(query(collection(db, 'products'), where('barcode', '==', barcode), where('deleted', '==', false), limit(1)));
-    if (!dup.empty) throw new Error(`فيه منتج بنفس الباركود: ${dup.docs[0].data().name}`);
-    const stock = parseInt(f.get('stock') || '0', 10) || 0;
+    const name = f.get('name').trim(), barcode = f.get('barcode').trim();
+    const unit = f.get('unit').trim() || 'قطعة', fractional = f.get('fractional') === 'on';
+    const price = parseFloat(f.get('price'));
+    if (!(price >= 0)) throw new Error('سعر غير صحيح');
+    // الباركود ما يتكررش
+    const dup = await getDocs(query(collection(db, 'products'), where('barcode', '==', barcode), where('deleted', '==', false), limit(2)));
+    const other = dup.docs.find((x) => !p || x.id !== p.id);
+    if (other) throw new Error(`فيه منتج بنفس الباركود: ${other.data().name}`);
+
+    if (p) {
+      await updateDoc(doc(db, 'products', p.id), { name, barcode, price, unit, fractional, updatedAt: serverTimestamp() });
+      toast('تم الحفظ');
+      return;
+    }
+    const stock = round3(parseFloat(f.get('stock') || '0') || 0);
+    if (!fractional && !Number.isInteger(stock)) throw new Error('الرصيد لازم يكون رقم صحيح (أو فعّل الكميات العشرية)');
     const ref = doc(collection(db, 'products'));
     const batch = writeBatch(db);
-    batch.set(ref, { name, barcode, price, stock, deleted: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), createdBy: me().uid });
+    batch.set(ref, { name, barcode, price, unit, fractional, stock, deleted: false,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(), createdBy: me().uid });
     if (stock) batch.set(doc(collection(db, 'stockMovements')), { productId: ref.id, productName: name, type: 'initial', delta: stock,
       balanceAfter: stock, userId: me().uid, userName: meLabel(), createdAt: serverTimestamp() });
     await batch.commit();
     toast('تم الحفظ');
   });
+
+  const bc = $('#bc', d), un = $('#un', d), fr = $('#fr', d);
+  // سكانر USB بيبعت Enter بعد الباركود: ما نسيبوش يقفل النموذج
+  bc.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); un.focus(); } };
+  $('#scan', d).onclick = () => openScanner((code) => { bc.value = code; toast(`الباركود: ${code}`); un.focus(); });
+  // تغيير الوحدة يحدّث عناوين الحقول ويعلّم الكسور تلقائياً للوحدات المعروفة
+  un.oninput = () => {
+    const u = un.value.trim() || 'قطعة';
+    $('#pl', d).textContent = `السعر لكل ${u}`;
+    const sl = $('#sl', d); if (sl) sl.textContent = `رصيد افتتاحي (بالـ ${u})`;
+    if (UNIT_SUGGESTIONS.includes(u)) fr.checked = FRACTIONAL_UNITS.includes(u);
+  };
+  if (!p) bc.focus();
 }
 
 function stockDialog(p) {
-  formDialog(`مخزون ${p.name} (الحالي ${p.stock || 0})`, `
+  const u = p.unit || 'قطعة';
+  const frac = p.fractional === true;
+  formDialog(`مخزون ${p.name} (الحالي ${fmtQty(p.stock || 0)} ${u})`, `
     <label>نوع العملية</label><select name="type"><option value="receive">استلام بضاعة (إضافة)</option><option value="adjustment">تسوية جرد (الرصيد الفعلي)</option></select>
-    <label>الكمية / الرصيد الفعلي</label><input name="v" type="number" step="1" required>
+    <label>الكمية / الرصيد الفعلي (بالـ ${esc(u)})</label><input name="v" type="number" step="${frac ? 'any' : '1'}" required>
     <label>ملاحظة (اختياري)</label><input name="note">`,
   'تسجيل', async (f) => {
-    const type = f.get('type'), v = parseInt(f.get('v'), 10), note = f.get('note').trim() || null;
+    const type = f.get('type'), v = parseFloat(f.get('v')), note = f.get('note').trim() || null;
     if (Number.isNaN(v)) throw new Error('رقم غير صحيح');
+    if (!frac && !Number.isInteger(v)) throw new Error('المنتج ده بيتباع بالقطعة: اكتب رقم صحيح (أو فعّل الكميات العشرية من تعديل المنتج)');
     const ref = doc(db, 'products', p.id), mref = doc(collection(db, 'stockMovements'));
     await runTransaction(db, async (tx) => {
       const s = await tx.get(ref);
       if (!s.exists()) throw new Error('المنتج مش موجود');
-      const cur = Number(s.data().stock) || 0;
-      const delta = type === 'adjustment' ? v - cur : v;
-      const after = cur + delta;
+      const cur = round3(Number(s.data().stock) || 0);
+      const delta = round3(type === 'adjustment' ? v - cur : v);
+      const after = round3(cur + delta);
       tx.update(ref, { stock: after, updatedAt: serverTimestamp() });
       tx.set(mref, { productId: p.id, productName: s.data().name, type, delta, balanceAfter: after, note,
         userId: me().uid, userName: meLabel(), createdAt: serverTimestamp() });
@@ -317,8 +356,8 @@ function pageMovements(el) {
     const list = all.filter((m) => type === 'all' || m.type === type);
     $('#tb').innerHTML = list.length ? table(['التاريخ', 'المنتج', 'النوع', 'الكمية', 'الرصيد بعد', 'بواسطة', 'مرجع / ملاحظة'],
       list.map((m) => `<tr><td>${fmtDateTime(toDate(m.createdAt) || new Date())}</td><td>${esc(m.productName)}</td><td>${esc(MOVE_LABEL[m.type] || m.type)}</td>
-        <td class="${m.delta < 0 ? 'neg' : ''}" dir="ltr" style="color:${m.delta < 0 ? '' : 'var(--ok)'}"><b>${m.delta > 0 ? '+' : ''}${m.delta}</b></td>
-        <td>${m.balanceAfter ?? '—'}</td><td>${esc(m.userName)}</td><td>${esc(m.invoiceNumber || m.note || '')}</td></tr>`).join(''))
+        <td class="${m.delta < 0 ? 'neg' : ''}" dir="ltr" style="color:${m.delta < 0 ? '' : 'var(--ok)'}"><b>${m.delta > 0 ? '+' : ''}${fmtQty(m.delta)}</b></td>
+        <td>${m.balanceAfter == null ? '—' : fmtQty(m.balanceAfter)}</td><td>${esc(m.userName)}</td><td>${esc(m.invoiceNumber || m.note || '')}</td></tr>`).join(''))
       : '<p class="muted center">لا توجد حركات</p>';
   };
   $('#ty').onchange = (e) => { type = e.target.value; draw(); };

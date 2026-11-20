@@ -1,12 +1,12 @@
 // واجهة تطبيق الكاشير (PWA)
-import { configured, auth, db, $, $$, esc, fmtMoney, fmtInt, fmtDateTime, toast, idb, isNetworkError } from './common.js';
+import { configured, auth, db, $, $$, esc, fmtMoney, fmtQty, fmtDateTime, toast, idb, isNetworkError } from './common.js';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut }
   from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import { doc, getDocFromServer }
   from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {
-  S, onChange, emit, loadInvoices, addToCart, clearCart, cartTotal, completeSale, localStock,
-  pendingCount, conflictCount, invoiceTotal, invoiceCount, deviceName, deviceCode, setDeviceName,
+  S, onChange, emit, loadInvoices, addToCart, setQty, clearCart, cartTotal, completeSale, localStock,
+  pendingCount, conflictCount, invoiceTotal, invoiceCount, lineTotal, deviceName, deviceCode, setDeviceName,
 } from './store.js';
 import { startSync, syncNow } from './sync.js';
 import {
@@ -19,7 +19,7 @@ let mode = '';          // login | shell | locked
 let tab = 'sell';       // sell | inv | acc
 let installEvent = null;
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; if (mode === 'shell' && tab === 'acc') renderTab(); });
 
 if (!configured) {
@@ -207,7 +207,13 @@ function buildSell() {
   $('#results').onclick = (e) => { const b = e.target.closest('button[data-id]'); if (b) pick(b.dataset.id); };
   $('#cart').onclick = (e) => {
     const b = e.target.closest('button[data-act]'); if (!b) return;
-    addToCart(b.dataset.id, b.dataset.act === 'inc' ? 1 : -1);
+    if (b.dataset.act === 'del') setQty(b.dataset.id, 0);
+    else addToCart(b.dataset.id, b.dataset.act === 'inc' ? 1 : -1);
+  };
+  // تعديل كمية منتج عشري (مل/جرام...) مباشرة من السلة
+  $('#cart').onchange = (e) => {
+    const i = e.target.closest('input[data-qty]'); if (!i) return;
+    setQty(i.dataset.qty, parseFloat(i.value));
   };
   updateSell();
 }
@@ -218,11 +224,40 @@ const matches = (v) => {
     .filter((p) => p.name.toLowerCase().includes(v) || p.barcode.toLowerCase().includes(v)).slice(0, 8);
 };
 
-function pick(id) {
+/** منتج بالقطعة: يتضاف 1 فوراً. منتج عشري (مل/جرام): بيسأل عن الكمية ويحسب السعر. */
+function addProduct(p) {
   if (S.lastInvoice) clearCart();
-  addToCart(id, 1);
-  const q = $('#q'); if (q) { q.value = ''; q.focus(); }
+  if (p.fractional) askQty(p); else addToCart(p.id, 1);
+}
+
+function pick(id) {
+  const p = S.products.get(id);
+  if (p) addProduct(p);
+  const q = $('#q'); if (q) { q.value = ''; if (!p || !p.fractional) q.focus(); }
   renderResults();
+}
+
+function askQty(p) {
+  const d = dialog(`
+    <h3 style="margin-top:0">${esc(p.name)}</h3>
+    <div class="muted">السعر: ${fmtMoney(p.price)} لكل ${esc(p.unit)} • المتاح ${fmtQty(localStock(p))} ${esc(p.unit)}</div>
+    <label>الكمية (${esc(p.unit)})</label>
+    <input id="aq" type="number" inputmode="decimal" step="any" min="0" autofocus placeholder="مثلاً 50" style="font-size:22px">
+    <div class="total"><span>القيمة</span><span id="at">${fmtMoney(0)}</span></div>
+    <div class="row"><button class="btn grow" id="ok">إضافة للسلة</button><button class="btn sec" id="no">إلغاء</button></div>`);
+  const qty = $('#aq', d);
+  const calc = () => { $('#at', d).textContent = fmtMoney(Math.round((parseFloat(qty.value) || 0) * p.price * 100) / 100); };
+  qty.oninput = calc;
+  const submit = () => {
+    const v = parseFloat(qty.value);
+    if (!(v > 0)) { toast('اكتب كمية أكبر من صفر', true); return; }
+    addToCart(p.id, v);
+    d.close();
+  };
+  $('#ok', d).onclick = submit;
+  qty.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+  $('#no', d).onclick = () => d.close();
+  setTimeout(() => qty.focus(), 50);
 }
 
 function onCode(code) {
@@ -232,9 +267,8 @@ function onCode(code) {
   const p = [...S.products.values()].find((x) => x.barcode === code);
   if (navigator.vibrate) navigator.vibrate(60);
   if (!p) { toast(`مفيش منتج بالباركود ${code}`, true); return; }
-  if (S.lastInvoice) clearCart();
-  addToCart(p.id, 1);
-  toast(`أُضيف: ${p.name}`);
+  addProduct(p);
+  if (!p.fractional) toast(`أُضيف: ${p.name}`);
 }
 
 function updateSell() {
@@ -249,7 +283,7 @@ function renderResults() {
   const m = matches(v);
   box.innerHTML = m.length ? m.map((p) => `
     <button data-id="${esc(p.id)}"><span>${esc(p.name)}</span>
-      <span class="muted">${fmtMoney(p.price)} • مخزون ${localStock(p)}</span></button>`).join('')
+      <span class="muted">${fmtMoney(p.price)}${p.fractional ? ` / ${esc(p.unit)}` : ''} • مخزون ${fmtQty(localStock(p))} ${p.fractional ? esc(p.unit) : ''}</span></button>`).join('')
     : '<p class="muted center">مفيش نتائج</p>';
 }
 
@@ -257,8 +291,8 @@ function renderCart() {
   const box = $('#cart');
   if (S.lastInvoice) {
     box.innerHTML = S.lastInvoice.items.map((i) => `
-      <div class="line"><div class="grow">${esc(i.name)}<div class="muted">${fmtMoney(i.unitPrice)} × ${i.qty}</div></div>
-      <b>${fmtMoney(i.unitPrice * i.qty)}</b></div>`).join('');
+      <div class="line"><div class="grow">${esc(i.name)}<div class="muted">${fmtMoney(i.unitPrice)} × ${fmtQty(i.qty)} ${esc(i.unit || 'قطعة')}</div></div>
+      <b>${fmtMoney(lineTotal(i))}</b></div>`).join('');
     return;
   }
   if (!S.cart.length) { box.innerHTML = '<p class="muted center" style="margin:24px 0">السلة فاضية. امسح باركود أو اكتب اسم منتج.</p>'; return; }
@@ -266,12 +300,23 @@ function renderCart() {
     const p = S.products.get(l.productId);
     if (!p) return '';
     const st = localStock(p);
+    const warn = st < l.qty ? `<span class="neg"> • المخزون ${fmtQty(st)}</span>` : '';
+    const total = fmtMoney(Math.round(p.price * l.qty * 100) / 100);
+    if (p.fractional) {
+      return `<div class="line">
+        <div class="grow"><div>${esc(p.name)}</div>
+          <div class="muted">${fmtMoney(p.price)} / ${esc(p.unit)} ${warn}</div></div>
+        <div class="qty"><input type="number" inputmode="decimal" step="any" min="0" value="${l.qty}" data-qty="${esc(p.id)}"
+          style="width:84px;padding:6px;text-align:center"><span>${esc(p.unit)}</span></div>
+        <b style="min-width:84px;text-align:left">${total}</b>
+        <button class="qty" data-act="del" data-id="${esc(p.id)}" style="border:0;cursor:pointer">✕</button></div>`;
+    }
     return `<div class="line">
       <div class="grow"><div>${esc(p.name)}</div>
-        <div class="muted">${fmtMoney(p.price)} ${st < l.qty ? `<span class="neg"> • المخزون ${st}</span>` : ''}</div></div>
+        <div class="muted">${fmtMoney(p.price)} ${warn}</div></div>
       <div class="qty"><button data-act="dec" data-id="${esc(p.id)}">−</button><b>${l.qty}</b>
         <button data-act="inc" data-id="${esc(p.id)}">+</button></div>
-      <b style="min-width:84px;text-align:left">${fmtMoney(p.price * l.qty)}</b></div>`;
+      <b style="min-width:84px;text-align:left">${total}</b></div>`;
   }).join('');
 }
 
@@ -393,7 +438,7 @@ function renderInvoicesTab(v) {
     </div>
     ${S.invoices.length ? S.invoices.map((i) => `
       <div class="inv" data-id="${esc(i.id)}">
-        <div><b>${esc(i.number)}</b><div class="muted">${fmtDateTime(i.createdAt)} • ${invoiceCount(i)} قطعة</div></div>
+        <div><b>${esc(i.number)}</b><div class="muted">${fmtDateTime(i.createdAt)} • ${invoiceCount(i)} صنف</div></div>
         <div style="text-align:left"><b>${fmtMoney(invoiceTotal(i))}</b><div>${statusPill(i)}</div></div>
       </div>`).join('') : '<p class="muted center">لا توجد فواتير بعد</p>'}`;
   $('#sn').onclick = () => syncNow();
@@ -405,7 +450,7 @@ function showInvoice(i) {
   const d = dialog(`
     <h3 style="margin-top:0">${esc(i.number)}</h3>
     <div class="muted">${fmtDateTime(i.createdAt)} • ${esc(i.cashierName)} ${statusPill(i)}</div>
-    <div class="gap">${i.items.map((x) => `<div class="kv"><span>${x.qty} × ${esc(x.name)}</span><b>${fmtMoney(x.qty * x.unitPrice)}</b></div>`).join('')}</div>
+    <div class="gap">${i.items.map((x) => `<div class="kv"><span>${fmtQty(x.qty)} ${esc(x.unit || 'قطعة')} × ${esc(x.name)}</span><b>${fmtMoney(lineTotal(x))}</b></div>`).join('')}</div>
     <div class="total"><span>الإجمالي</span><span>${fmtMoney(invoiceTotal(i))}</span></div>
     ${i.conflictNotes && i.conflictNotes.length ? `<p class="neg">ملاحظات التعارض (المالك هيراجعها):</p>${i.conflictNotes.map((n) => `<div>• ${esc(n)}</div>`).join('')}` : ''}
     ${i.lastError ? `<p class="muted">آخر خطأ مزامنة: ${esc(i.lastError)}</p>` : ''}

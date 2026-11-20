@@ -1,7 +1,7 @@
 // الطباعة: إيصال بيترسم على canvas (بيدعم العربي) ← يتبعت كصورة ESC/POS لطابعة بلوتوث BLE،
 // أو يتطبع من المتصفح (window.print) على أي طابعة معرّفة على الجهاز.
-import { fmtDateTime, fmtMoney, CURRENCY } from './common.js';
-import { invoiceTotal } from './store.js';
+import { fmtDateTime, fmtMoney, fmtQty, CURRENCY } from './common.js';
+import { invoiceTotal, lineTotal } from './store.js';
 
 const FONT = '"Segoe UI", Tahoma, "Noto Naskh Arabic", Arial, sans-serif';
 
@@ -27,12 +27,13 @@ export function renderReceipt(inv, shop) {
   if (inv.cashierName) text(`الكاشير: ${inv.cashierName}`, { size: 20, align: 'center' });
   rows.push({ t: 'line' });
   for (const it of inv.items) {
+    const unit = it.unit || 'قطعة';
     rows.push({
       t: 'row', size: 22,
-      right: `${it.qty} × ${it.name}`,
-      left: (it.qty * it.unitPrice).toFixed(2),
+      right: `${fmtQty(it.qty)} ${unit} × ${it.name}`,
+      left: lineTotal(it).toFixed(2),
     });
-    if (it.qty > 1) text(`${it.unitPrice.toFixed(2)} للقطعة`, { size: 17, align: 'right', gray: true });
+    if (it.qty !== 1) text(`${it.unitPrice.toFixed(2)} لكل ${unit}`, { size: 17, align: 'right', gray: true });
   }
   rows.push({ t: 'line' });
   rows.push({ t: 'row', size: 28, bold: true, right: 'الإجمالي', left: `${invoiceTotal(inv).toFixed(2)} ${CURRENCY}` });
