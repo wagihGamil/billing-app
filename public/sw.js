@@ -1,12 +1,15 @@
 // Service Worker: يخلّي التطبيق يفتح أوفلاين. بيكاشّي ملفات التطبيق ومكتبات Firebase.
 // مش بيتدخّل في طلبات Firestore/Auth (دي بيتولاها Firebase SDK بنفسه).
-const CACHE = 'pos-shell-v3';
+const CACHE = 'pos-shell-v4';
 const SHELL = [
-  '/', '/index.html', '/app.js', '/common.js', '/store.js', '/sync.js', '/print.js',
-  '/style.css', '/firebase-config.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png',
-  '/owner/', '/owner/index.html', '/owner/owner.js',
+  './', './index.html', './app.js', './common.js', './store.js', './sync.js', './print.js',
+  './style.css', './firebase-config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png',
+  './owner/', './owner/index.html', './owner/owner.js',
 ];
 const CDN_HOSTS = ['www.gstatic.com', 'cdnjs.cloudflare.com'];
+
+// مسار الجذر للتطبيق (يشتغل سواء على دومين رئيسي أو جوه /billing-app/)
+const BASE = new URL('./', self.location).pathname;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
@@ -39,7 +42,9 @@ self.addEventListener('fetch', (e) => {
         caches.open(CACHE).then((c) => c.put(req, copy));
         return res;
       }).catch(() => caches.match(req).then((r) => r ||
-        caches.match(url.pathname.startsWith('/owner') ? '/owner/index.html' : '/index.html')))
+        caches.match(url.pathname.startsWith(BASE + 'owner')
+          ? new URL('./owner/index.html', self.location).href
+          : new URL('./index.html', self.location).href)))
     );
     return;
   }
